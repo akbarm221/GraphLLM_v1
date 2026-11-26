@@ -322,7 +322,7 @@ def buat_rangkaian(llm):
             qa_prompt | llm | StrOutputParser())
 
 
-def jawab_pertanyaan(cypher_chain, qa_chain, graph, pertanyaan):
+def jawab_pertanyaan(cypher_chain, qa_chain, graph, pertanyaan, laporkan_tahap=None):
     tahap = "LLM membuat Cypher"
     try:
         kueri = cypher_chain.invoke({"schema": graph.schema,
@@ -333,12 +333,16 @@ def jawab_pertanyaan(cypher_chain, qa_chain, graph, pertanyaan):
         # Tangani keluaran LLM memakai kelas error dari rerun Streamlit ini.
         kueri = periksa_kueri_baca(kueri)
         tahap = "Neo4j menjalankan Cypher"
+        if laporkan_tahap is not None:
+            laporkan_tahap("Membaca data dari Neo4j…")
         semua_hasil = graph.query(kueri)
         context = semua_hasil[:TOP_K]
         dipotong = len(semua_hasil) > TOP_K
         print(f"[HASIL DATABASE] {len(semua_hasil)} baris diterima; "
               f"{len(context)} baris untuk jawaban.", flush=True)
         tahap = "LLM menyusun jawaban"
+        if laporkan_tahap is not None:
+            laporkan_tahap("Menyusun jawaban…")
         jawaban = qa_chain.invoke({
             "question": pertanyaan,
             "context": json.dumps(context, ensure_ascii=False, default=str),
@@ -501,34 +505,44 @@ def main():
                 with st.expander("Kueri dan hasil database"):
                     st.json(pesan["steps"])
 
-    pertanyaan = st.chat_input("Contoh: Satwa apa yang tercatat di Taman Nasional Berbak?")
+    pertanyaan = st.chat_input(
+        "Contoh: Satwa apa yang tercatat di Taman Nasional Berbak?",
+        submit_mode="stop",
+    )
     if not pertanyaan:
         return
     st.session_state.messages.append({"role": "user", "content": pertanyaan})
     with st.chat_message("user"):
         st.markdown(pertanyaan)
     with st.chat_message("assistant"):
-        with st.spinner("Mencari informasi dalam arsip WDB..."):
-            try:
-                hasil = jawab_pertanyaan(cypher_chain, qa_chain, graph, pertanyaan)
-                jawaban = hasil["result"]
-                langkah = hasil.get("intermediate_steps", []) if boleh_debug else []
-            except KueriDitolak as error:
-                st.error(str(error))
-                st.session_state.messages.append({"role": "assistant", "content": str(error)})
-                return
-            except (ServiceUnavailable, SessionExpired) as error:
-                print(f"[KONEKSI NEO4J GAGAL] {type(error).__name__}; "
-                      "percobaan baca berakhir.", flush=True)
-                pesan_error = "Koneksi ke database belum berhasil setelah percobaan ulang. Coba lagi beberapa saat lagi."
-                st.error(pesan_error)
-                st.session_state.messages.append({"role": "assistant", "content": pesan_error})
-                return
-            except Exception:
-                pesan_error = "Pertanyaan belum berhasil diproses. Coba perjelas pertanyaan atau coba kembali."
-                st.error(pesan_error)
-                st.session_state.messages.append({"role": "assistant", "content": pesan_error})
-                return
+        kemajuan = st.empty()
+        kemajuan.caption("Membuat kueri Cypher…")
+        # Pembaruan tampilan memberi Streamlit kesempatan memproses Stop
+        # sebelum panggilan berikutnya ke Neo4j atau layanan LLM.
+        try:
+            hasil = jawab_pertanyaan(
+                cypher_chain, qa_chain, graph, pertanyaan, laporkan_tahap=kemajuan.caption,
+            )
+            jawaban = hasil["result"]
+            langkah = hasil.get("intermediate_steps", []) if boleh_debug else []
+        except KueriDitolak as error:
+            st.error(str(error))
+            st.session_state.messages.append({"role": "assistant", "content": str(error)})
+            return
+        except (ServiceUnavailable, SessionExpired) as error:
+            print(f"[KONEKSI NEO4J GAGAL] {type(error).__name__}; "
+                  "percobaan baca berakhir.", flush=True)
+            pesan_error = "Koneksi ke database belum berhasil setelah percobaan ulang. Coba lagi beberapa saat lagi."
+            st.error(pesan_error)
+            st.session_state.messages.append({"role": "assistant", "content": pesan_error})
+            return
+        except Exception:
+            pesan_error = "Pertanyaan belum berhasil diproses. Coba perjelas pertanyaan atau coba kembali."
+            st.error(pesan_error)
+            st.session_state.messages.append({"role": "assistant", "content": pesan_error})
+            return
+        finally:
+            kemajuan.empty()
         st.markdown(jawaban)
         if tampil_debug:
             with st.expander("Kueri dan hasil database"):
