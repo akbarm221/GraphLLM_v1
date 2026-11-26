@@ -367,6 +367,7 @@ def inisialisasi_bot():
     load_dotenv(Path(__file__).resolve().with_name(".env"), encoding="utf-8-sig",
                 override=False, interpolate=False)
     wajib_env("NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD", "NEO4J_DATABASE")
+    print("[INISIALISASI] Menyiapkan klien LLM.", flush=True)
     if os.getenv("AZURE_OPENAI_API_KEY_CHAT"):
         wajib_env("AZURE_OPENAI_ENDPOINT_CHAT", "AZURE_OPENAI_DEPLOYMENT_CHAT")
         llm = AzureChatOpenAI(
@@ -380,6 +381,7 @@ def inisialisasi_bot():
         wajib_env("OPENAI_API_KEY")
         llm = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
                          api_key=os.getenv("OPENAI_API_KEY"), temperature=0)
+    print("[INISIALISASI] Menghubungkan Neo4j dan membaca skema.", flush=True)
     graph = GrafWDB(
         url=os.getenv("NEO4J_URI"), username=os.getenv("NEO4J_USERNAME"),
         password=os.getenv("NEO4J_PASSWORD"), database=os.getenv("NEO4J_DATABASE"),
@@ -400,6 +402,7 @@ def inisialisasi_bot():
     )
     graph._batasi_chatbot = True
     try:
+        print("[INISIALISASI] Menyiapkan rangkaian chatbot.", flush=True)
         cypher_chain, qa_chain = buat_rangkaian(llm)
     except Exception:
         graph.close()
@@ -420,7 +423,16 @@ def main():
         st.stop()
         return
     except Exception as error:
-        print(f"[INISIALISASI GAGAL] {type(error).__name__}", flush=True)
+        sebab = error.__cause__ or error.__context__
+        rincian = type(error).__name__
+        if sebab is not None:
+            rincian += f" -> {type(sebab).__name__}"
+        for kegagalan in (sebab, error):
+            kode = getattr(kegagalan, "code", None)
+            if isinstance(kode, str) and re.fullmatch(r"Neo\.[A-Za-z]+\.[A-Za-z]+\.[A-Za-z]+", kode):
+                rincian += f" ({kode})"
+                break
+        print(f"[INISIALISASI GAGAL] {rincian}", flush=True)
         st.error("Koneksi belum berhasil. Periksa pengaturan Neo4j dan layanan LLM.")
         st.stop()
         return
