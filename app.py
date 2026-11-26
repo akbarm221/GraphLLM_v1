@@ -8,7 +8,8 @@ Setiap pertanyaan diproses mandiri; riwayat hanya untuk tampilan.
 
 Koneksi: NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD, NEO4J_DATABASE.
 Azure: AZURE_OPENAI_API_KEY_CHAT, AZURE_OPENAI_ENDPOINT_CHAT,
-       AZURE_OPENAI_DEPLOYMENT_CHAT, AZURE_OPENAI_API_VERSION.
+       AZURE_OPENAI_DEPLOYMENT_CHAT. Endpoint /openai/v1 memakai Responses API.
+       AZURE_OPENAI_API_VERSION berlaku untuk endpoint Azure lama.
 OpenAI alternatif: OPENAI_API_KEY dan OPENAI_MODEL.
 Debug opsional: WDB_SHOW_DEBUG=1 untuk membuka panel pemeriksaan kueri.
 """
@@ -406,18 +407,32 @@ def inisialisasi_bot():
     load_dotenv(Path(__file__).resolve().with_name(".env"), encoding="utf-8-sig",
                 override=False, interpolate=False)
     wajib_env("NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD", "NEO4J_DATABASE")
-    print("[INISIALISASI] Menyiapkan klien LLM.", flush=True)
     if os.getenv("AZURE_OPENAI_API_KEY_CHAT"):
         wajib_env("AZURE_OPENAI_ENDPOINT_CHAT", "AZURE_OPENAI_DEPLOYMENT_CHAT")
-        llm = AzureChatOpenAI(
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT_CHAT"),
-            api_key=os.getenv("AZURE_OPENAI_API_KEY_CHAT"),
-            azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT_CHAT"),
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
-            temperature=0,
-        )
+        endpoint = os.environ["AZURE_OPENAI_ENDPOINT_CHAT"].strip().rstrip("/")
+        deployment = os.environ["AZURE_OPENAI_DEPLOYMENT_CHAT"].strip()
+        api_key = os.environ["AZURE_OPENAI_API_KEY_CHAT"]
+        if endpoint.endswith("/openai/v1"):
+            print("[INISIALISASI] Menyiapkan Azure OpenAI Responses API v1.", flush=True)
+            llm = ChatOpenAI(
+                base_url=f"{endpoint}/",
+                api_key=api_key,
+                model=deployment,
+                use_responses_api=True,
+                store=False,
+            )
+        else:
+            print("[INISIALISASI] Menyiapkan Azure OpenAI dengan versi API eksplisit.", flush=True)
+            llm = AzureChatOpenAI(
+                azure_endpoint=endpoint,
+                api_key=api_key,
+                azure_deployment=deployment,
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+                temperature=0,
+            )
     else:
         wajib_env("OPENAI_API_KEY")
+        print("[INISIALISASI] Menyiapkan klien OpenAI.", flush=True)
         llm = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
                          api_key=os.getenv("OPENAI_API_KEY"), temperature=0)
     print("[INISIALISASI] Menghubungkan Neo4j dan membaca skema.", flush=True)
