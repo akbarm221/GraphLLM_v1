@@ -322,26 +322,32 @@ def buat_rangkaian(llm):
 
 
 def jawab_pertanyaan(cypher_chain, qa_chain, graph, pertanyaan):
-    # Panggilan LLM 1: hanya pertanyaan ini dan skema, tanpa percakapan lain.
-    kueri = cypher_chain.invoke({"schema": graph.schema,
-                                "question": pertanyaan}).strip()
-    pagar = re.fullmatch(r"```(?:cypher)?\s*\n([\s\S]*?)\n```", kueri, re.IGNORECASE)
-    if pagar:
-        kueri = pagar.group(1).strip()
-    # Tangani keluaran LLM memakai kelas error dari rerun Streamlit ini.
-    kueri = periksa_kueri_baca(kueri)
-    # GrafWDB tetap memeriksa kueri sebelum menjalankannya di Neo4j.
-    semua_hasil = graph.query(kueri)
-    context = semua_hasil[:TOP_K]
-    dipotong = len(semua_hasil) > TOP_K
-    print(f"[HASIL DATABASE] {len(semua_hasil)} baris diterima; "
-          f"{len(context)} baris untuk jawaban.", flush=True)
-    # Panggilan LLM 2: hanya pertanyaan ini dan hasil baca database untuknya.
-    jawaban = qa_chain.invoke({
-        "question": pertanyaan,
-        "context": json.dumps(context, ensure_ascii=False, default=str),
-        "row_count": len(context), "truncated": "ya" if dipotong else "tidak",
-    })
+    tahap = "LLM membuat Cypher"
+    try:
+        kueri = cypher_chain.invoke({"schema": graph.schema,
+                                    "question": pertanyaan}).strip()
+        pagar = re.fullmatch(r"```(?:cypher)?\s*\n([\s\S]*?)\n```", kueri, re.IGNORECASE)
+        if pagar:
+            kueri = pagar.group(1).strip()
+        # Tangani keluaran LLM memakai kelas error dari rerun Streamlit ini.
+        kueri = periksa_kueri_baca(kueri)
+        tahap = "Neo4j menjalankan Cypher"
+        semua_hasil = graph.query(kueri)
+        context = semua_hasil[:TOP_K]
+        dipotong = len(semua_hasil) > TOP_K
+        print(f"[HASIL DATABASE] {len(semua_hasil)} baris diterima; "
+              f"{len(context)} baris untuk jawaban.", flush=True)
+        tahap = "LLM menyusun jawaban"
+        jawaban = qa_chain.invoke({
+            "question": pertanyaan,
+            "context": json.dumps(context, ensure_ascii=False, default=str),
+            "row_count": len(context), "truncated": "ya" if dipotong else "tidak",
+        })
+    except KueriDitolak:
+        raise
+    except Exception as error:
+        print(f"[PERTANYAAN GAGAL] {tahap} | {ringkas_error(error)}", flush=True)
+        raise
     return {"result": jawaban, "intermediate_steps": [
         {"query": kueri},
         {"context": context, "truncated": dipotong},
@@ -349,6 +355,39 @@ def jawab_pertanyaan(cypher_chain, qa_chain, graph, pertanyaan):
 
 
 # 4. KONFIGURASI DAN KONEKSI: variabel lingkungan atau .env lokal.
+def ringkas_error(error):
+    # Log hanya tipe dan metadata yang sudah dikenali. Pesan asli dapat berisi
+    # URL layanan, kueri, atau isi permintaan.
+    rincian = [type(error).__name__]
+    sebab = error.__cause__ or error.__context__
+    if sebab is not None:
+        rincian[0] += f" -> {type(sebab).__name__}"
+
+    kode_llm = {
+        "DeploymentNotFound", "ResourceNotFound", "model_not_found",
+        "unsupported_parameter", "unsupported_value", "invalid_api_version",
+        "OperationNotSupported", "content_filter", "invalid_api_key",
+        "rate_limit_exceeded", "insufficient_quota",
+    }
+    parameter_llm = {
+        "temperature", "model", "api_version", "max_tokens",
+        "max_completion_tokens", "reasoning_effort", "top_p",
+    }
+    for kegagalan in filter(None, (error, sebab)):
+        status = getattr(kegagalan, "status_code", None)
+        if isinstance(status, int) and 400 <= status <= 599:
+            rincian.append(f"HTTP {status}")
+        kode = getattr(kegagalan, "code", None)
+        if isinstance(kode, str) and (
+            kode in kode_llm or re.fullmatch(r"Neo\.[A-Za-z]+\.[A-Za-z]+\.[A-Za-z]+", kode)
+        ):
+            rincian.append(kode)
+        parameter = getattr(kegagalan, "param", None)
+        if isinstance(parameter, str) and parameter in parameter_llm:
+            rincian.append(f"parameter={parameter}")
+    return " | ".join(dict.fromkeys(rincian))
+
+
 def mode_debug_aktif():
     return os.getenv("WDB_SHOW_DEBUG", "").strip().lower() in {"1", "true"}
 
@@ -423,16 +462,7 @@ def main():
         st.stop()
         return
     except Exception as error:
-        sebab = error.__cause__ or error.__context__
-        rincian = type(error).__name__
-        if sebab is not None:
-            rincian += f" -> {type(sebab).__name__}"
-        for kegagalan in (sebab, error):
-            kode = getattr(kegagalan, "code", None)
-            if isinstance(kode, str) and re.fullmatch(r"Neo\.[A-Za-z]+\.[A-Za-z]+\.[A-Za-z]+", kode):
-                rincian += f" ({kode})"
-                break
-        print(f"[INISIALISASI GAGAL] {rincian}", flush=True)
+        print(f"[INISIALISASI GAGAL] {ringkas_error(error)}", flush=True)
         st.error("Koneksi belum berhasil. Periksa pengaturan Neo4j dan layanan LLM.")
         st.stop()
         return
